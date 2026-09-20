@@ -1644,8 +1644,8 @@ func (h *ResponseHeader) Get(key string) string {
 // GetAll returns all header value for the given key
 // it is concurrent safety and long lifetime.
 func (h *RequestHeader) GetAll(key string) []string {
-	res := make([]string, 0)
 	headers := h.PeekAll(key)
+	res := make([]string, 0, len(headers))
 	for _, header := range headers {
 		res = append(res, string(header))
 	}
@@ -1655,8 +1655,8 @@ func (h *RequestHeader) GetAll(key string) []string {
 // GetAll returns all header value for the given key and is concurrent safety.
 // it is concurrent safety and long lifetime.
 func (h *ResponseHeader) GetAll(key string) []string {
-	res := make([]string, 0)
 	headers := h.PeekAll(key)
+	res := make([]string, 0, len(headers))
 	for _, header := range headers {
 		res = append(res, string(header))
 	}
@@ -1672,18 +1672,19 @@ func appendHeaderLine(dst, key, value []byte) []byte {
 	}
 	dst = append(dst, key...)
 	dst = append(dst, bytestr.StrColonSpace...)
-	dst = append(dst, newlineToSpace(value)...)
+	dst = appendHeaderValue(dst, value)
 	return append(dst, bytestr.StrCRLF...)
 }
 
-// newlineToSpace will return a copy of the original byte slice.
-func newlineToSpace(val []byte) []byte {
-	filteredVal := make([]byte, len(val))
-	copy(filteredVal, val)
-	for i := 0; i < len(filteredVal); i++ {
-		filteredVal[i] = bytesconv.NewlineToSpaceTable[filteredVal[i]]
+func appendHeaderValue(dst, v []byte) []byte {
+	ret := append(dst, v...)
+	v = ret[len(dst):]
+	for i, c := range v { // '\r' or '\n' -> ' '
+		if c == '\r' || c == '\n' {
+			v[i] = ' '
+		}
 	}
-	return filteredVal
+	return ret
 }
 
 func UpdateServerDate() {

@@ -13,7 +13,7 @@ POST /api/v1/finances/transactions
 -   请求示例
 
 ```
-s{
+{
     "transactions": [
         {
             "mtid": 1002,

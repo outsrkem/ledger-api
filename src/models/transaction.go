@@ -1,6 +1,9 @@
 package models
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -121,4 +124,89 @@ func GetBillById(instanceId string, billId int64) ([]*OrmTransaction, error) {
 		Find(&detail).Error
 
 	return detail, err
+}
+
+// TransactionFilter 账单查询条件，nil 表示该维度不过滤
+type TransactionFilter struct {
+	CategoryId *int64
+	From       *int64           // 含
+	To         *int64           // 不含
+	MinAmount  *decimal.Decimal // 含
+	MaxAmount  *decimal.Decimal // 含
+	Keyword    *string
+	Direction  *int8
+
+	Limit  int
+	Offset int
+
+	SortColumn string // "occ_at" | "amount" | "create_time"
+	SortOrder  string // "ASC" | "DESC"
+}
+
+// FindTransactionByFilter 带搜索条件的分页查询
+func FindTransactionByFilter(instanceId string, f TransactionFilter, count *int64) ([]*OrmTransaction, error) {
+	query := db.Model(&OrmTransaction{}).
+		Where("instance_id = ?", instanceId)
+
+	if f.CategoryId != nil {
+		query = query.Where("category_id = ?", *f.CategoryId)
+	}
+	if f.From != nil {
+		query = query.Where("occ_at >= ?", *f.From) // 左闭
+	}
+	if f.To != nil {
+		query = query.Where("occ_at < ?", *f.To) // 右开
+	}
+	if f.Keyword != nil && *f.Keyword != "" {
+		kw := escapeLike(*f.Keyword)
+		query = query.Where("remark LIKE ?", "%"+kw+"%")
+	}
+
+	// 收支方向：按 amount 正负判断，无需 join 分类表
+	if f.Direction != nil {
+		switch *f.Direction {
+		case 1: // 收入
+			query = query.Where("amount > 0")
+		case 2: // 支出
+			query = query.Where("amount < 0")
+		}
+	}
+
+	// 金额区间：按正负区间展开，查 10 命中 +10 和 -10
+	//   min=10,max=10  → (amount >= 10 AND amount <= 10) OR (amount >= -10 AND amount <= -10)
+	//   min=10,max=100 → (amount >= 10 AND amount <= 100) OR (amount >= -100 AND amount <= -10)
+	//   只 min=10      → (amount >= 10) OR (amount <= -10)
+	//   只 max=100     → (amount <= 100) OR (amount >= -100)
+	if f.MinAmount != nil || f.MaxAmount != nil {
+		posCond := db.Where("1 = 1")
+		negCond := db.Where("1 = 1")
+
+		if f.MinAmount != nil {
+			posCond = posCond.Where("amount >= ?", *f.MinAmount)
+			negCond = negCond.Where("amount <= ?", f.MinAmount.Neg())
+		}
+		if f.MaxAmount != nil {
+			posCond = posCond.Where("amount <= ?", *f.MaxAmount)
+			negCond = negCond.Where("amount >= ?", f.MaxAmount.Neg())
+		}
+
+		query = query.Where(db.Where(posCond).Or(negCond))
+	}
+
+	// 分页前统计总数
+	if err := query.Count(count).Error; err != nil {
+		return nil, err
+	}
+
+	// 排序：列名/方向均来自白名单；kid 作为稳定 tie-breaker
+	orderClause := fmt.Sprintf("%s %s, kid %s", f.SortColumn, f.SortOrder, f.SortOrder)
+
+	var result []*OrmTransaction
+	err := query.Order(orderClause).Limit(f.Limit).Offset(f.Offset).Find(&result).Error
+	return result, err
+}
+
+// escapeLike 转义 LIKE 通配符
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
